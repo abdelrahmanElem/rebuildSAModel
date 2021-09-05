@@ -1,39 +1,29 @@
 import re
-from sklearn.feature_extraction.text import TfidfVectorizer
-from pyarabic.normalize import normalize_searchtext,strip_tatweel,strip_tashkeel
-import pandas as pd
+from pyarabic.normalize import strip_tatweel,strip_tashkeel
 from camel_tools.disambig.mle import MLEDisambiguator
 import nltk
-nltk.download('wordnet')
 from nltk.stem import WordNetLemmatizer
 from autocorrect import Speller
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.model_selection import train_test_split
-from sklearn.svm import SVC
-import pickle
+from ar_corrector.corrector import Corrector
+from googletrans import Translator
+import enchant
 
 
 
 
-
-
-class ElementalSentimentAnalysis:
-    def __init__(self,train=False):
+class preprocessData():
+    def __init__(self):
+        self.translator = Translator()
+        #english words
+        self.words = set(nltk.corpus.words.words())
+        nltk.download('wordnet')
         self.stopWords=self.readStopWords(fileName='normalizedStopWords.txt')
-        self.mle = MLEDisambiguator.pretrained()
         # Init the Wordnet Lemmatizer for english
         self.eLemmatizer = WordNetLemmatizer()
         self.eSpell = Speller(lang='en')
-        if train:
-            self.vectorizer = CountVectorizer()
-        else:
-            self.vectorizer=pickle.load(open('CounVectorizer.sav', 'rb'))
-        if train:
-            self.model = None
-        else:
-            self.model=pickle.load(open('SvmModel.sav', 'rb'))
-        # print(self.preprocessData(["أنا احب ان العب مع أصدقائي i like to play with for freinds"]))
-        # # print(self.getWordTypeArabic("أنا احب أن ألعب الكرة و أنا سعيد"))
+        self.mle = MLEDisambiguator.pretrained()
+        self.englishDictionary=enchant.Dict("en_US")
+        self.aSpell = Corrector()
 
 
     def deEmojify(self,text):
@@ -45,7 +35,15 @@ class ElementalSentimentAnalysis:
                             "]+", flags = re.UNICODE)
         return regrex_pattern.sub(r'',text)
 
-    def preprocessData(self,dataSet):
+    def readStopWords(self,fileName):
+        file1 = open(fileName, 'r', encoding='utf8')
+        Lines = file1.readlines()
+        myWordSet = set()
+        for line in Lines:
+            myWordSet.add(line.strip())
+        return myWordSet
+
+    def preprocessData(self,dataSet,Tokinize=False):
         processedDataSet = []
         i=0
         for sentence in dataSet:
@@ -55,7 +53,7 @@ class ElementalSentimentAnalysis:
             processed_feature = self.deEmojify(sentence)
             arabic = re.sub(r'\s*[A-Za-z0-9]+\b', '', processed_feature)
             english = re.sub(r'\s*[^A-Za-z0-9\s]+\b', "", processed_feature)
-            processed_feature=self.prepareArabicSentence(arabic).strip()+" "+self.prepareEnglishSentence(english).strip()
+            processed_feature=self.prepareArabicSentence(arabic).strip()+" "+self.prepareEnglishSentence(self.filterEnglish(english)).strip()
             # Remove all the special characters
             processed_feature = re.sub(r'\W', ' ', processed_feature)
             # remove all single characters
@@ -73,7 +71,10 @@ class ElementalSentimentAnalysis:
             # Remove stop words
             processed_feature = self.removeStopWords(processed_feature)
             processed_feature = processed_feature.strip()
-            processedDataSet.append(processed_feature.split())
+            if Tokinize:
+                processedDataSet.append(processed_feature.split())
+            else:
+                processedDataSet.append(processed_feature)
         return processedDataSet
 
     def checkDoubleChars(self,sentence):
@@ -103,16 +104,13 @@ class ElementalSentimentAnalysis:
         processed_feature = ' '.join([self.eLemmatizer.lemmatize(w) for w in processed_feature.split()])
         return processed_feature
 
-    #lemmtization
-    #check type of word
-    #spelling checker
-    #tokenize
-
     def prepareArabicSentence(self,sentence):
         #lemmatization
         lemmas=sentence.split()
         disambig = self.mle.disambiguate(lemmas)
         sentence = " ".join(d.analyses[0].analysis['lex'] for d in disambig if len(d.analyses)>0)
+        #spelling correction
+        sentence=self.aSpell.contextual_correct(sentence)
         # strip tashkeel strip tatweel
         sentence=strip_tashkeel(sentence)
         sentence=strip_tatweel(sentence)
@@ -127,20 +125,6 @@ class ElementalSentimentAnalysis:
         sentence = sentence.replace('ى','ي')
         return sentence
 
-    def vectorizeListOfWords(self, list,train=False):
-        if (train):
-            processed_features = self.vectorizer.fit(list)
-        processed_features = self.vectorizer.transform(list)
-        return processed_features
-
-    def readStopWords(self,fileName):
-        file1 = open(fileName, 'r', encoding='utf8')
-        Lines = file1.readlines()
-        myWordSet = set()
-        for line in Lines:
-            myWordSet.add(line.strip())
-        return myWordSet
-
     def removeStopWords(self,sentence):
         newSentence = ""
         for i in sentence.split():
@@ -148,60 +132,150 @@ class ElementalSentimentAnalysis:
                 newSentence = newSentence + " " + i
         return newSentence
 
+    #translate franco (it takes a lot of time for large datasets)
+    def translateFrancoSentence(self,word):
+        translation=self.translator.translate(str(word),src='ar',dest='en')
+        return translation.text
 
-    def readDataSet(self,fileName,maxEnteries):
-        texts = []
-        labels = []
-        line_count = 0
-        df1 = pd.read_csv(fileName)
-        df1.columns = ['index', 'label', 'text']
-        for index, row in df1.iterrows():
-            line_count = line_count + 1
-            texts.append(row['text'])
-            labels.append(row['label'])
-            if line_count >= maxEnteries:
-                break
-        print(f' INFO: Processed {line_count} lines.')
-        return texts, labels
+    def filterEnglish(self,sent):
+        if sent==None or len(sent)<=1:
+            return ''
+        sent=sent.lower()
+        english = ""
+        franco=""
+        notTranslated=0
+        for w in nltk.wordpunct_tokenize(sent):
+            if (self.englishDictionary.check(w.lower())):
+                if notTranslated ==1:
+                    franco = self.translateFrancoSentence(franco)
+                    english = english+" "+franco
+                    franco=""
+                    notTranslated=0
+                english= english+" "+w
+            else:
+                franco = franco+" "+w
+                notTranslated=1
+        if notTranslated==1:
+            franco = self.translateFrancoSentence(franco)
+            english = english + " " + franco
+        return english
 
-    def getWordTypeArabic(self,sentence):
-        lemmas=sentence.split()
-        disambig = self.mle.disambiguate(lemmas)
-        new_sentence = [d.analyses[0].analysis['pos'] for d in disambig if len(d.analyses)>0]
+    def removeNonEnglishWords(self,sentence):
+        newSentence=""
+        for w in nltk.wordpunct_tokenize(sentence):
+            if (self.englishDictionary.check(w.lower())):
+                newSentence= newSentence+" "+w
+            else:
+                pass
+        return newSentence.strip()
+
+    def preprocessDataToEnglish(self,dataSet, Tokinize=False):
+        processedDataSet = []
         i=0
-        my_list={}
-        while i<len(lemmas):
-            if len(disambig[i].analyses)>0:
-                my_list[lemmas[i]]=disambig[i].analyses[0].analysis['pos']
+        for sentence in dataSet:
             i=i+1
-        return my_list
-
-    def trainModel(self):
-        features,labels=self.readDataSet('abdo_shuffled.csv',125000)
-        self.preprocessData(features)
-        X_train,X_test,y_train,y_test=train_test_split(features,labels,test_size=0.1)
-        X_train_vectorized=self.vectorizeListOfWords(X_train,train=True)
-        pickle.dump(self.vectorizer, open('CounVectorizer.sav', 'wb'))
-        X_test_vectorized=self.vectorizeListOfWords(X_test,train=False)
-        svclassifier = SVC(kernel='linear')
-        svclassifier.fit(X_train_vectorized, y_train)
-        y_predict=svclassifier.predict(X_test_vectorized)
-        pickle.dump(svclassifier, open('SvmModel.sav', 'wb'))
-        from sklearn.metrics import classification_report, confusion_matrix,accuracy_score
-        print("Accuracy for SVM: %s"
-              % (accuracy_score(y_test, y_predict)))
-        print(confusion_matrix(y_test, y_predict))
-        print(classification_report(y_test, y_predict))
-
-
-
-
-
-
+            print(i)
+            # Remove emojis
+            processed_feature = self.deEmojify(sentence)
+            arabic = re.sub(r'\s*[A-Za-z0-9]+\b', '', processed_feature)
+            english = re.sub(r'\s*[^A-Za-z0-9\s]+\b', "", processed_feature)
+            try:
+                translatedArabic = self.translateFrancoSentence(arabic)
+            except:
+                translatedArabic=""
+            english=self.filterEnglish(english)
+            processed_feature=translatedArabic.strip()+" "+english.strip()
+            processed_feature=self.prepareEnglishSentence(processed_feature)
+            # Remove all the special characters
+            processed_feature = re.sub(r'\W', ' ', processed_feature)
+            # remove all single characters
+            processed_feature = re.sub(r'\s+[a-zA-Z]\s+', ' ', processed_feature)
+            # Remove single characters from the start
+            processed_feature = re.sub(r'\^[a-zA-Z]\s+', ' ', processed_feature)
+            # Substituting multiple spaces with single space
+            processed_feature = re.sub(r'\s+', ' ', processed_feature, flags=re.I)
+            # Remove stop words
+            processed_feature = self.removeStopWords(processed_feature)
+            # Remove non english Words
+            processed_feature=self.removeNonEnglishWords(processed_feature)
+            if Tokinize:
+                processedDataSet.append(processed_feature.split())
+            else:
+                processedDataSet.append(processed_feature)
+        return processedDataSet
 
 if __name__=="__main__":
-    sa = ElementalSentimentAnalysis(train=True)
-    sa.trainModel()
+    dataPreProcessor= preprocessData()
+    # print(dataPreProcessor.preprocessDataToEnglish(['I love going to mexico','ana ba7eb aroo7 henak','انا مش مصدق نفسي I am on Television ','انا بحب ألعب كوره']))
 
+    # Program to extract a particular row value
+    import pandas as pd
+    dataCustom = pd.read_excel("custom data.xlsx")
+    dataset=[]
+    customTest=[]
+    # data=[row[0] for row in dataset]
+    # labels=[row[1] for row in dataset]
 
+    counter=0
+    for index, row in dataCustom.iterrows():
+        counter=counter+1
+        if counter<1800:
+            dataset.append([(row['Column1']), int(row['Column2'])])
+        elif counter>=1800 and counter<=2000:
+            customTest.append([(row['Column1']), int(row['Column2'])])
+        elif counter>2000:
+            break
+    dataCustom = pd.read_csv("abdo_shuffled.csv")
+    counter=0
+    for index, row in dataCustom.iterrows():
+        counter=counter+1
+        if counter<15000:
+            dataset.append([(row['text']), int(row['label'])])
+        else:
+            break
+    data=[row[0] for row in dataset]
+    labels=[row[1] for row in dataset]
+    X_test=[row[0] for row in customTest]
+    y_test=[row[1] for row in customTest]
 
+    #train data
+    from sklearn.model_selection import train_test_split
+
+    X_train,X_val,y_train,y_val= train_test_split(data,labels,test_size=0.1)
+    X_train=dataPreProcessor.preprocessDataToEnglish(X_train)
+    X_val=dataPreProcessor.preprocessDataToEnglish(X_val)
+    X_test=dataPreProcessor.preprocessDataToEnglish(X_test)
+
+    from sklearn.feature_extraction.text import CountVectorizer
+    vec= CountVectorizer()
+    vec.fit(X_train)
+    X_train_vec=vec.transform(X_train)
+    X_val_vec=vec.transform(X_val)
+    X_test_vec= vec.transform(X_test)
+    from sklearn.svm import SVC
+    svclassifier = SVC()
+    y_val_predict= svclassifier.predict(X_val_vec)
+    y_test_predict = svclassifier.predict(X_test_vec)
+    from sklearn.metrics import accuracy_score
+    print("Accuracy for RFC: %s"
+          % (accuracy_score(y_test, y_test_predict)))
+    print("Accuracy for RFC: %s"
+          % (accuracy_score(y_val, y_val_predict)))
+
+    # for index,row in dataCustom.iterrows():
+    #     dataset.append([(row['Column1']), int(row['Column2'])])
+
+    # df = pd.read_csv('sentiment_tweets3.csv')
+    # i=0
+    # for index, row in df.iterrows():
+    #     customTest.append([row['message to examine'],int(row['label'])])
+    #     i=i+1
+    #     if (i==5):
+    #         break
+
+    # data=[row[0] for row in dataset]
+    # labels=[row[1] for row in dataset]
+    # i=0
+    # while i < len(labels):
+    #     dataPreProcessor.translateFrancoSentence(data[i])
+    # print(labels)
