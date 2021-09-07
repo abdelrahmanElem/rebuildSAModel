@@ -43,19 +43,21 @@ class preprocessData():
             myWordSet.add(line.strip())
         return myWordSet
 
-    def preprocessData(self,dataSet,Tokinize=False):
+    def preprocessData(self,dataSet,Tokinize=False,hasFranco=True):
         processedDataSet = []
         i=0
         for sentence in dataSet:
             i=i+1
             print(i)
             # Remove emojis
-            processed_feature = self.deEmojify(sentence)
+            # Remove all the special characters
+            processed_feature = re.sub(r'\W', ' ', sentence)
+            processed_feature = self.deEmojify(processed_feature)
             arabic = re.sub(r'\s*[A-Za-z0-9]+\b', '', processed_feature)
             english = re.sub(r'\s*[^A-Za-z0-9\s]+\b', "", processed_feature)
-            processed_feature=self.prepareArabicSentence(arabic).strip()+" "+self.prepareEnglishSentence(self.filterEnglish(english)).strip()
-            # Remove all the special characters
-            processed_feature = re.sub(r'\W', ' ', processed_feature)
+            if hasFranco:
+                english = self.filterEnglish(english)
+            processed_feature=self.prepareArabicSentence(arabic).strip()+" "+self.prepareEnglishSentence(english).strip()
             # remove all single characters
             processed_feature = re.sub(r'\s+[a-zA-Z]\s+', ' ', processed_feature)
             # Remove single characters from the start
@@ -207,10 +209,9 @@ class preprocessData():
 if __name__=="__main__":
     dataPreProcessor= preprocessData()
     # print(dataPreProcessor.preprocessDataToEnglish(['I love going to mexico','ana ba7eb aroo7 henak','انا مش مصدق نفسي I am on Television ','انا بحب ألعب كوره']))
-
     # Program to extract a particular row value
     import pandas as pd
-    dataCustom = pd.read_excel("custom data.xlsx")
+    dataCustom = pd.read_excel("custom data2.xlsx")
     dataset=[]
     customTest=[]
     # data=[row[0] for row in dataset]
@@ -219,20 +220,20 @@ if __name__=="__main__":
     counter=0
     for index, row in dataCustom.iterrows():
         counter=counter+1
-        if counter<1800:
+        if counter<2500:
             dataset.append([(row['Column1']), int(row['Column2'])])
-        elif counter>=1800 and counter<=2000:
+        elif counter>=2500 and counter<=2750:
             customTest.append([(row['Column1']), int(row['Column2'])])
-        elif counter>2000:
+        elif counter>2750:
             break
     dataCustom = pd.read_csv("abdo_shuffled.csv")
     counter=0
-    for index, row in dataCustom.iterrows():
-        counter=counter+1
-        if counter<15000:
-            dataset.append([(row['text']), int(row['label'])])
-        else:
-            break
+    # for index, row in dataCustom.iterrows():
+    #     counter=counter+1
+    #     if counter<15000:
+    #         dataset.append([(row['text']), int(row['label'])])
+    #     else:
+    #         break
     data=[row[0] for row in dataset]
     labels=[row[1] for row in dataset]
     X_test=[row[0] for row in customTest]
@@ -241,10 +242,13 @@ if __name__=="__main__":
     #train data
     from sklearn.model_selection import train_test_split
 
-    X_train,X_val,y_train,y_val= train_test_split(data,labels,test_size=0.1)
-    X_train=dataPreProcessor.preprocessDataToEnglish(X_train)
-    X_val=dataPreProcessor.preprocessDataToEnglish(X_val)
-    X_test=dataPreProcessor.preprocessDataToEnglish(X_test)
+    X_train,X_val,y_train,y_val= train_test_split(data,labels,test_size=0.05)
+    # X_train=dataPreProcessor.preprocessDataToEnglish(X_train)
+    # X_val=dataPreProcessor.preprocessDataToEnglish(X_val)
+    # X_test=dataPreProcessor.preprocessDataToEnglish(X_test)
+    X_train=dataPreProcessor.preprocessData(X_train,Tokinize=False,hasFranco=False)
+    X_val=dataPreProcessor.preprocessData(X_val,Tokinize=False,hasFranco=False)
+    X_test=dataPreProcessor.preprocessData(X_test,Tokinize=False,hasFranco=False)
 
     from sklearn.feature_extraction.text import CountVectorizer
     vec= CountVectorizer()
